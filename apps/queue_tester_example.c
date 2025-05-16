@@ -4,16 +4,16 @@
 
 #include <queue.h>
 
-#define TEST_ASSERT(assert)		   \
-	do {				   \
-		printf("ASSERT: " #assert " ... "); \
-		if (assert) {		   \
-			printf("PASS\n");	   \
-		} else {		   \
-			printf("FAIL\n");	   \
-			exit(1);		   \
-		}				   \
-	} while (0)
+#define TEST_ASSERT(assert)				\
+do {									\
+	printf("ASSERT: " #assert " ... ");	\
+	if (assert) {						\
+		printf("PASS\n");				\
+	} else	{							\
+		printf("FAIL\n");				\
+		exit(1);						\
+	}									\
+} while(0)
 
 /* Create */
 void test_create(void)
@@ -33,7 +33,7 @@ void test_queue_simple(void)
 
 	q = queue_create();
 	queue_enqueue(q, &data);
-	queue_dequeue(q, (void **)&ptr);
+	queue_dequeue(q, (void**)&ptr);
 	TEST_ASSERT(ptr == &data);
 }
 

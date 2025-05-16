@@ -1,60 +1,117 @@
-#include <stdbool.h>
+/*
+ * Producer/consumer test
+ *
+ * A producer produces N values in a shared buffer, while a consume consumes M
+ * of these values. N and M are always less than the size of the buffer but can
+ * be different. The synchronization is managed through two semaphores.
+ */
+
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "uthread.h"
-#include "sem.h"
 
-#define BUFFER_SIZE 4
+#include <sem.h>
+#include <uthread.h>
 
-typedef struct {
-    int buffer[BUFFER_SIZE];
-    int in;
-    int out;
-    sem_t mutex;
-    sem_t empty;
-    sem_t full;
-} buffer_t;
+#define BUFFER_SIZE	16
+#define MAXCOUNT	1000
 
-void producer(void *arg) {
-    buffer_t *t = (buffer_t *)arg;
-    for (int i = 1; i <= 8; i++) {
-        sem_down(&t->empty);
-        sem_down(&t->mutex);
-        t->buffer[t->in] = i;
-        printf("Produced: %d\n", i);
-        t->in = (t->in + 1) % BUFFER_SIZE;
-        sem_up(&t->mutex);
-        sem_up(&t->full);
-    }
+struct test4 {
+	sem_t empty;
+	sem_t full;
+	sem_t mutex;
+	size_t size, head, tail, maxcount;
+	unsigned int prod_seed, cons_seed;
+	unsigned int buffer[BUFFER_SIZE];
+};
+
+#define clamp(x, y) (((x) <= (y)) ? (x) : (y))
+
+static void consumer(void* arg)
+{
+	struct test4 *t = (struct test4*)arg;
+	size_t out = 0;
+
+	while (out < t->maxcount - 1) {
+		size_t i, M = rand_r(&t->cons_seed) % BUFFER_SIZE + 1;
+
+		M = clamp(M, t->maxcount - out - 1);
+		printf("Consumer wants to get %zu items out of buffer...\n", M);
+		for (i = 0; i < M; i++) {
+			sem_down(t->empty);
+			out = t->buffer[t->tail];
+			printf("Consumer is taking %zu out of buffer\n", out);
+			t->tail = (t->tail + 1) % BUFFER_SIZE;
+			sem_down(t->mutex);
+			t->size--;
+			sem_up(t->mutex);
+			sem_up(t->full);
+		}
+	}
 }
 
-void consumer(void *arg) {
-    buffer_t *t = (buffer_t *)arg;
-    for (int i = 1; i <= 8; i++) {
-        sem_down(&t->full);
-        sem_down(&t->mutex);
-        int item = t->buffer[t->out];
-        printf("Consumed: %d\n", item);
-        t->out = (t->out + 1) % BUFFER_SIZE;
-        sem_up(&t->mutex);
-        sem_up(&t->empty);
-    }
+static void producer(void* arg)
+{
+	struct test4 *t = (struct test4*)arg;
+	size_t count = 0;
+
+	uthread_create(consumer, arg);
+
+	while (count < t->maxcount) {
+		size_t i, N = rand_r(&t->prod_seed) % BUFFER_SIZE + 1;
+		N = clamp(N, t->maxcount - count);
+
+		printf("Producer wants to put %zu items into buffer...\n", N);
+		for (i = 0; i < N; i++) {
+			sem_down(t->full);
+			printf("Producer is putting %zu into buffer\n", count);
+			t->buffer[t->head] = count++;
+			t->head = (t->head + 1) % BUFFER_SIZE;
+			sem_down(t->mutex);
+			t->size++;
+			sem_up(t->mutex);
+			sem_up(t->empty);
+		}
+	}
 }
 
-void start(void *arg) {
-    (void)arg;
-    static buffer_t t;
-    t.in = 0;
-    t.out = 0;
-    t.mutex = sem_create(1);
-    t.empty = sem_create(BUFFER_SIZE);
-    t.full = sem_create(0);
-
-    uthread_create(producer, &t);
-    uthread_create(consumer, &t);
+static unsigned int get_argv(char *argv)
+{
+	long int ret = strtol(argv, NULL, 0);
+	if (ret == LONG_MIN || ret == LONG_MAX) {
+		perror("strtol");
+		exit(1);
+	}
+	return ret;
 }
 
-int main(void) {
-    uthread_run(0, start, NULL);
-    return 0;
+int main(int argc, char **argv)
+{
+	struct test4 t;
+	unsigned int maxcount = MAXCOUNT;
+
+	t.cons_seed = 1;
+	t.prod_seed = 2;
+
+	if (argc > 1)
+		maxcount = get_argv(argv[1]);
+	if (argc > 2)
+		t.cons_seed = get_argv(argv[2]);
+	if (argc > 3)
+		t.prod_seed = get_argv(argv[3]);
+
+	t.size = t.head = t.tail = 0;
+	t.maxcount = maxcount;
+
+	t.mutex = sem_create(1);
+	t.empty = sem_create(0);
+	t.full = sem_create(BUFFER_SIZE);
+
+	uthread_run(false, producer, &t);
+
+	sem_destroy(t.empty);
+	sem_destroy(t.full);
+	sem_destroy(t.mutex);
+
+	return 0;
 }

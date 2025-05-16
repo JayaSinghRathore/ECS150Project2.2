@@ -1,17 +1,25 @@
+/*
+ * Simple hello world test
+ *
+ * Tests the creation of a single thread and its successful return.
+ */
+
+#include <stdbool.h>
 #include <stdio.h>
-#include "uthread.h"
+#include <stdlib.h>
 
-void hello(void *arg) {
-    (void)arg;
-    printf("Hello world!\n");
+#include <uthread.h>
+
+void hello(void *arg)
+{
+	(void)arg;
+
+	printf("Hello world!\n");
 }
 
-void start(void *arg) {
-    (void)arg;
-    uthread_create(hello, NULL);
-}
+int main(void)
+{
+	uthread_run(false, hello, NULL);
 
-int main(void) {
-    uthread_run(0, start, NULL);
-    return 0;
+	return 0;
 }
