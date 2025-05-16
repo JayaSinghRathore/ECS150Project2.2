@@ -1,0 +1,29 @@
+#ifndef UTHREAD_H
+#define UTHREAD_H
+
+#include <ucontext.h>
+
+#define UTHREAD_STACK_SIZE 8192
+
+typedef enum {
+    READY,
+    RUNNING,
+    BLOCKED,
+    EXITED
+} thread_state_t;
+
+typedef struct uthread {
+    ucontext_t context;
+    void* stack;
+    int is_main_thread;
+    thread_state_t state;
+    struct uthread* next;
+} uthread_t;
+
+void uthread_run(int preempt, void (*func)(void *), void *arg);
+int uthread_create(void (*func)(void *), void *arg);
+void uthread_yield(void);
+void uthread_exit(void);
+int uthread_ctx_init(ucontext_t *ctx, void *stack, void (*func)(void *), void *arg);
+
+#endif
