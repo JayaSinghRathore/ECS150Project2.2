@@ -1,17 +1,23 @@
-#ifndef _UTHREAD_H
-#define _UTHREAD_H
+#ifndef UTHREAD_H
+#define UTHREAD_H
 
-#include <stddef.h>
-#include <stdint.h>
-#include <stdbool.h>
+#include <ucontext.h>
 
-typedef int uthread_t;
+#define UTHREAD_MAX_THREADS 128
+#define UTHREAD_STACK_SIZE  32768
 
-uthread_t uthread_self(void);
-uthread_t uthread_create(void (*func)(void *), void *arg);
+typedef struct uthread_tcb {
+    ucontext_t context;
+    void (*func)(void *);
+    void *arg;
+    void *stack;
+    int finished;
+} uthread_tcb_t;
+
+void uthread_init(void);
+int uthread_create(void (*func)(void *), void *arg);
 void uthread_yield(void);
-void uthread_exit(void *retval);
-int uthread_join(uthread_t tid, void **retval);
-int uthread_run(bool preempt, void (*start_func)(void *), void *arg);
+void uthread_exit(void);
+void uthread_run(void);
 
-#endif /* _UTHREAD_H */
+#endif // UTHREAD_H

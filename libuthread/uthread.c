@@ -1,118 +1,83 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdbool.h>
-#include "private.h"
 #include "uthread.h"
 #include "queue.h"
+#include <stdlib.h>
+#include <stdio.h>
 
-// No need to redefine uthread_state_t or struct uthread_tcb here!
+queue_t ready_queue = NULL;
+uthread_tcb_t *current_thread = NULL;
+static ucontext_t main_context;
+static int initialized = 0;
 
-static queue_t ready_queue;
-static uthread_tcb_t *current_thread = NULL;
-static uthread_t next_tid = 1;
-
-// Export for sem.c
-uthread_tcb_t *uthread_current(void) { return current_thread; }
-queue_t get_ready_queue(void) { return ready_queue; }
-
-static void thread_wrapper(void *arg) {
-    uthread_tcb_t *tcb = (uthread_tcb_t *)arg;
+static void thread_stub(void *arg) {
+    (void)arg;  // Suppress unused parameter warning
+    uthread_tcb_t *tcb = current_thread;
     tcb->func(tcb->arg);
-    uthread_exit(NULL);
+    tcb->finished = 1;
+    uthread_exit();
 }
 
-static void schedule(void) {
-    uthread_tcb_t *prev = current_thread;
-    uthread_tcb_t *next = NULL;
-
-    while (queue_dequeue(ready_queue, (void **)&next) == 0) {
-        if (next->state == UTHREAD_READY) break;
-    }
-    if (!next) exit(0);
-
-    next->state = UTHREAD_RUNNING;
-    current_thread = next;
-
-    if (prev && prev->state == UTHREAD_FINISHED) {
-        uthread_ctx_switch(&prev->context, &next->context);
-        uthread_ctx_destroy_stack(prev->stack);
-        free(prev);
-    } else if (prev && prev != next) {
-        queue_enqueue(ready_queue, prev);
-        prev->state = UTHREAD_READY;
-        uthread_ctx_switch(&prev->context, &next->context);
-    } else if (!prev) {
-        setcontext(&next->context);
-    }
+void uthread_init(void) {
+    if (initialized) return;
+    ready_queue = queue_create();
+    initialized = 1;
 }
 
-uthread_t uthread_create(void (*func)(void *), void *arg) {
-    preempt_disable();
+int uthread_create(void (*func)(void *), void *arg) {
+    uthread_init();
     uthread_tcb_t *tcb = malloc(sizeof(uthread_tcb_t));
-    if (!tcb) { preempt_enable(); return -1; }
-    tcb->tid = next_tid++;
-    tcb->stack = uthread_ctx_alloc_stack();
+    if (!tcb) return -1;
+
     tcb->func = func;
     tcb->arg = arg;
-    tcb->retval = NULL;
-    tcb->state = UTHREAD_READY;
-    if (uthread_ctx_init(&tcb->context, tcb->stack, thread_wrapper, tcb) == -1) {
-        uthread_ctx_destroy_stack(tcb->stack);
+    tcb->finished = 0;
+    tcb->stack = malloc(UTHREAD_STACK_SIZE);
+    if (!tcb->stack) {
         free(tcb);
-        preempt_enable();
         return -1;
     }
-    queue_enqueue(ready_queue, tcb);
-    preempt_enable();
-    return tcb->tid;
-}
 
-uthread_t uthread_self(void) {
-    return current_thread ? current_thread->tid : -1;
+    getcontext(&tcb->context);
+    tcb->context.uc_stack.ss_sp = tcb->stack;
+    tcb->context.uc_stack.ss_size = UTHREAD_STACK_SIZE;
+    tcb->context.uc_link = &main_context;
+    makecontext(&tcb->context, (void (*)())thread_stub, 1, arg);
+
+    queue_enqueue(ready_queue, tcb);
+    return 0;
 }
 
 void uthread_yield(void) {
-    preempt_disable();
-    if (current_thread && current_thread->state == UTHREAD_RUNNING)
-        current_thread->state = UTHREAD_READY;
-    schedule();
-    preempt_enable();
+    uthread_tcb_t *prev = current_thread;
+    uthread_tcb_t *next = NULL;
+
+    if (prev && !prev->finished)
+        queue_enqueue(ready_queue, prev);
+
+    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
+        current_thread = next;
+        swapcontext(&prev->context, &next->context);
+    }
 }
 
-void uthread_exit(void *retval) {
-    preempt_disable();
-    current_thread->retval = retval;
-    current_thread->state = UTHREAD_FINISHED;
-    schedule();
-    fprintf(stderr, "uthread_exit: fatal error, returned from schedule\n");
-    exit(1);
+void uthread_exit(void) {
+    uthread_tcb_t *prev = current_thread;
+    free(prev->stack);
+    free(prev);
+    current_thread = NULL;
+    uthread_tcb_t *next = NULL;
+    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
+        current_thread = next;
+        setcontext(&next->context);
+    } else {
+        setcontext(&main_context);
+    }
 }
 
-int uthread_join(uthread_t tid, void **retval) {
-    (void)tid; (void)retval;
-    return -1;
-}
-
-int uthread_run(bool preempt, void (*start_func)(void *), void *arg) {
-    ready_queue = queue_create();
-    if (!ready_queue) return -1;
-
-    uthread_tcb_t main_tcb;
-    main_tcb.tid = 0;
-    main_tcb.stack = NULL;
-    main_tcb.func = NULL;
-    main_tcb.arg = NULL;
-    main_tcb.retval = NULL;
-    main_tcb.state = UTHREAD_RUNNING;
-    current_thread = &main_tcb;
-
-    if (uthread_create(start_func, arg) == -1) return -1;
-
-    if (preempt) preempt_start(true);
-
-    schedule();
-
-    if (preempt) preempt_stop();
-
-    return 0;
+void uthread_run(void) {
+    uthread_init();
+    uthread_tcb_t *next = NULL;
+    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
+        current_thread = next;
+        swapcontext(&main_context, &next->context);
+    }
 }
