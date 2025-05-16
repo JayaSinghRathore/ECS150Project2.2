@@ -20,14 +20,22 @@ static void preempt_handler(int signum)
 
 void preempt_disable(void)
 {
-    if (preempt_on)
-        sigprocmask(SIG_BLOCK, &(sigset_t){SIGVTALRM}, NULL);
+    if (preempt_on) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGVTALRM);
+        sigprocmask(SIG_BLOCK, &set, NULL);
+    }
 }
 
 void preempt_enable(void)
 {
-    if (preempt_on)
-        sigprocmask(SIG_UNBLOCK, &(sigset_t){SIGVTALRM}, NULL);
+    if (preempt_on) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGVTALRM);
+        sigprocmask(SIG_UNBLOCK, &set, NULL);
+    }
 }
 
 void preempt_start(bool preempt)
