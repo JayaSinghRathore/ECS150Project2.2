@@ -1,26 +1,19 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Werror -O2 -MMD
+CFLAGS = -Wall -Wextra -Werror -g
 AR = ar
 ARFLAGS = rcs
 
-SRC = queue.c sem.c uthread.c context.c preempt.c
-OBJ = $(SRC:.c=.o)
-DEP = $(OBJ:.o=.d)
+TARGET = libuthread.a
+SRCS = queue.c context.c uthread.c sem.c preempt.c
+OBJS = $(SRCS:.c=.o)
 
-LIB = libuthread.a
+all: $(TARGET)
 
-all: $(LIB)
-
-$(LIB): $(OBJ)
+$(TARGET): $(OBJS)
 	$(AR) $(ARFLAGS) $@ $^
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
--include $(DEP)
-
 clean:
-	rm -f $(OBJ) $(DEP) $(LIB)
-
-.PHONY: all clean
-
+	rm -f $(OBJS) $(TARGET)

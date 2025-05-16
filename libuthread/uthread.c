@@ -1,157 +1,118 @@
-#include <assert.h>
-#include <signal.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <sys/time.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include "private.h"
 #include "uthread.h"
 #include "queue.h"
 
-enum thread_state {
-    RUNNING,
-    READY,
-    BLOCKED,
-    EXITED
-};
-
-struct uthread_tcb {
-    uthread_ctx_t ctx;
-    void *stack;
-    enum thread_state state;
-};
+// No need to redefine uthread_state_t or struct uthread_tcb here!
 
 static queue_t ready_queue;
-static queue_t blocked_queue;
-static struct uthread_tcb *current_thread = NULL;
-static struct uthread_tcb *idle_thread = NULL;
+static uthread_tcb_t *current_thread = NULL;
+static uthread_t next_tid = 1;
 
-struct uthread_tcb *uthread_current(void)
-{
-    return current_thread;
+// Export for sem.c
+uthread_tcb_t *uthread_current(void) { return current_thread; }
+queue_t get_ready_queue(void) { return ready_queue; }
+
+static void thread_wrapper(void *arg) {
+    uthread_tcb_t *tcb = (uthread_tcb_t *)arg;
+    tcb->func(tcb->arg);
+    uthread_exit(NULL);
 }
 
-static void schedule(void)
-{
-    struct uthread_tcb *prev = current_thread;
-    struct uthread_tcb *next = NULL;
-    if (queue_dequeue(ready_queue, (void**)&next) == 0) {
-        current_thread = next;
-        current_thread->state = RUNNING;
-    } else {
-        current_thread = idle_thread;
-        current_thread->state = RUNNING;
+static void schedule(void) {
+    uthread_tcb_t *prev = current_thread;
+    uthread_tcb_t *next = NULL;
+
+    while (queue_dequeue(ready_queue, (void **)&next) == 0) {
+        if (next->state == UTHREAD_READY) break;
     }
-    if (prev != current_thread)
-        uthread_ctx_switch(&prev->ctx, &current_thread->ctx);
-}
+    if (!next) exit(0);
 
-void uthread_yield(void)
-{
-    preempt_disable();
-    if (current_thread && current_thread->state == RUNNING && current_thread != idle_thread) {
-        current_thread->state = READY;
-        queue_enqueue(ready_queue, current_thread);
+    next->state = UTHREAD_RUNNING;
+    current_thread = next;
+
+    if (prev && prev->state == UTHREAD_FINISHED) {
+        uthread_ctx_switch(&prev->context, &next->context);
+        uthread_ctx_destroy_stack(prev->stack);
+        free(prev);
+    } else if (prev && prev != next) {
+        queue_enqueue(ready_queue, prev);
+        prev->state = UTHREAD_READY;
+        uthread_ctx_switch(&prev->context, &next->context);
+    } else if (!prev) {
+        setcontext(&next->context);
     }
-    schedule();
-    preempt_enable();
 }
 
-void uthread_exit(void)
-{
+uthread_t uthread_create(void (*func)(void *), void *arg) {
     preempt_disable();
-    current_thread->state = EXITED;
-    free(current_thread->stack);
-    free(current_thread);
-    schedule();
-    preempt_enable();
-    // Should never return
-    assert(0);
-}
-
-int uthread_create(uthread_func_t func, void *arg)
-{
-    struct uthread_tcb *tcb = malloc(sizeof(struct uthread_tcb));
-    if (!tcb)
-        return -1;
+    uthread_tcb_t *tcb = malloc(sizeof(uthread_tcb_t));
+    if (!tcb) { preempt_enable(); return -1; }
+    tcb->tid = next_tid++;
     tcb->stack = uthread_ctx_alloc_stack();
-    if (!tcb->stack) {
-        free(tcb);
-        return -1;
-    }
-    if (uthread_ctx_init(&tcb->ctx, tcb->stack, func, arg) < 0) {
+    tcb->func = func;
+    tcb->arg = arg;
+    tcb->retval = NULL;
+    tcb->state = UTHREAD_READY;
+    if (uthread_ctx_init(&tcb->context, tcb->stack, thread_wrapper, tcb) == -1) {
         uthread_ctx_destroy_stack(tcb->stack);
         free(tcb);
+        preempt_enable();
         return -1;
     }
-    tcb->state = READY;
-    preempt_disable();
     queue_enqueue(ready_queue, tcb);
     preempt_enable();
-    return 0;
+    return tcb->tid;
 }
 
-static void idle(void *arg)
-{
-    (void)arg;
-    while (queue_length(ready_queue) > 0 || queue_length(blocked_queue) > 0)
-        uthread_yield();
+uthread_t uthread_self(void) {
+    return current_thread ? current_thread->tid : -1;
 }
 
-int uthread_run(bool preempt, uthread_func_t func, void *arg)
-{
+void uthread_yield(void) {
+    preempt_disable();
+    if (current_thread && current_thread->state == UTHREAD_RUNNING)
+        current_thread->state = UTHREAD_READY;
+    schedule();
+    preempt_enable();
+}
+
+void uthread_exit(void *retval) {
+    preempt_disable();
+    current_thread->retval = retval;
+    current_thread->state = UTHREAD_FINISHED;
+    schedule();
+    fprintf(stderr, "uthread_exit: fatal error, returned from schedule\n");
+    exit(1);
+}
+
+int uthread_join(uthread_t tid, void **retval) {
+    (void)tid; (void)retval;
+    return -1;
+}
+
+int uthread_run(bool preempt, void (*start_func)(void *), void *arg) {
     ready_queue = queue_create();
-    blocked_queue = queue_create();
-    if (!ready_queue || !blocked_queue)
-        return -1;
+    if (!ready_queue) return -1;
 
-    preempt_start(preempt);
+    uthread_tcb_t main_tcb;
+    main_tcb.tid = 0;
+    main_tcb.stack = NULL;
+    main_tcb.func = NULL;
+    main_tcb.arg = NULL;
+    main_tcb.retval = NULL;
+    main_tcb.state = UTHREAD_RUNNING;
+    current_thread = &main_tcb;
 
-    idle_thread = malloc(sizeof(struct uthread_tcb));
-    if (!idle_thread)
-        return -1;
-    idle_thread->stack = uthread_ctx_alloc_stack();
-    if (!idle_thread->stack) {
-        free(idle_thread);
-        return -1;
-    }
-    uthread_ctx_init(&idle_thread->ctx, idle_thread->stack, idle, NULL);
-    idle_thread->state = RUNNING;
+    if (uthread_create(start_func, arg) == -1) return -1;
 
-    current_thread = idle_thread;
-
-    if (uthread_create(func, arg) < 0)
-        return -1;
+    if (preempt) preempt_start(true);
 
     schedule();
 
-    preempt_stop();
+    if (preempt) preempt_stop();
 
-    uthread_ctx_destroy_stack(idle_thread->stack);
-    free(idle_thread);
-    queue_destroy(ready_queue);
-    queue_destroy(blocked_queue);
     return 0;
 }
-
-void uthread_block(void)
-{
-    preempt_disable();
-    current_thread->state = BLOCKED;
-    queue_enqueue(blocked_queue, current_thread);
-    schedule();
-    preempt_enable();
-}
-
-void uthread_unblock(struct uthread_tcb *uthread)
-{
-    preempt_disable();
-    if (uthread->state == BLOCKED) {
-        uthread->state = READY;
-        queue_delete(blocked_queue, uthread);
-        queue_enqueue(ready_queue, uthread);
-    }
-    preempt_enable();
-}
-

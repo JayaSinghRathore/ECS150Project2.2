@@ -1,67 +1,66 @@
-#include <stddef.h>
 #include <stdlib.h>
 #include "queue.h"
-#include "private.h"
 #include "sem.h"
+#include "uthread.h"
+#include "private.h"
 
-struct semaphore {
-    size_t count;
-    queue_t waiters;
+struct sem {
+    int count;
+    queue_t blocked_queue;
 };
 
-sem_t sem_create(size_t count)
-{
-    sem_t sem = malloc(sizeof(struct semaphore));
-    if (!sem)
-        return NULL;
+sem_t sem_create(int count) {
+    preempt_disable();
+    sem_t sem = malloc(sizeof(struct sem));
+    if (!sem) { preempt_enable(); return NULL; }
     sem->count = count;
-    sem->waiters = queue_create();
-    if (!sem->waiters) {
-        free(sem);
-        return NULL;
-    }
+    sem->blocked_queue = queue_create();
+    if (!sem->blocked_queue) { free(sem); preempt_enable(); return NULL; }
+    preempt_enable();
     return sem;
 }
 
-int sem_destroy(sem_t sem)
-{
-    if (!sem || queue_length(sem->waiters) != 0)
+int sem_destroy(sem_t sem) {
+    preempt_disable();
+    if (!sem || queue_length(sem->blocked_queue) > 0) {
+        preempt_enable();
         return -1;
-    queue_destroy(sem->waiters);
+    }
+    queue_destroy(sem->blocked_queue);
     free(sem);
+    preempt_enable();
     return 0;
 }
 
-int sem_down(sem_t sem)
-{
-    if (!sem)
-        return -1;
+int sem_down(sem_t sem) {
+    if (!sem) return -1;
     preempt_disable();
-    while (sem->count == 0) {
-        queue_enqueue(sem->waiters, uthread_current());
-        uthread_block();
+    while (1) {
+        if (sem->count > 0) {
+            sem->count--;
+            preempt_enable();
+            return 0;
+        }
+        uthread_tcb_t *curr = uthread_current();
+        curr->state = UTHREAD_BLOCKED;
+        queue_enqueue(sem->blocked_queue, curr);
         preempt_enable();
         uthread_yield();
         preempt_disable();
     }
-    sem->count--;
-    preempt_enable();
-    return 0;
 }
 
-int sem_up(sem_t sem)
-{
-    if (!sem)
-        return -1;
+int sem_up(sem_t sem) {
+    if (!sem) return -1;
     preempt_disable();
-    if (queue_length(sem->waiters) > 0) {
-        struct uthread_tcb *tcb;
-        queue_dequeue(sem->waiters, (void**)&tcb);
-        uthread_unblock(tcb);
-    } else {
-        sem->count++;
+    sem->count++;
+    if (queue_length(sem->blocked_queue) > 0) {
+        uthread_tcb_t *thread_to_unblock;
+        if (queue_dequeue(sem->blocked_queue, (void **)&thread_to_unblock) == 0) {
+            thread_to_unblock->state = UTHREAD_READY;
+            queue_enqueue(get_ready_queue(), thread_to_unblock);
+        }
     }
     preempt_enable();
     return 0;
 }
-
