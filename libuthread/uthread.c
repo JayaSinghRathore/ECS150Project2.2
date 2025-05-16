@@ -1,83 +1,106 @@
 #include "uthread.h"
-#include "queue.h"
+#include "private.h"
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <ucontext.h>
 
-queue_t ready_queue = NULL;
-uthread_tcb_t *current_thread = NULL;
-static ucontext_t main_context;
-static int initialized = 0;
+uthread_t *current = NULL;
+static uthread_t *main_thread = NULL;
+static uthread_t *ready_queue = NULL;
 
-static void thread_stub(void *arg) {
-    (void)arg;  // Suppress unused parameter warning
-    uthread_tcb_t *tcb = current_thread;
-    tcb->func(tcb->arg);
-    tcb->finished = 1;
-    uthread_exit();
+void enqueue(uthread_t *t) {
+    t->next = NULL;
+    if (!ready_queue) {
+        ready_queue = t;
+    } else {
+        uthread_t *tmp = ready_queue;
+        while (tmp->next)
+            tmp = tmp->next;
+        tmp->next = t;
+    }
 }
 
-void uthread_init(void) {
-    if (initialized) return;
-    ready_queue = queue_create();
-    initialized = 1;
+static uthread_t* dequeue(void) {
+    if (!ready_queue)
+        return NULL;
+    uthread_t *t = ready_queue;
+    ready_queue = ready_queue->next;
+    t->next = NULL;
+    return t;
+}
+
+void uthread_run(int preempt, void (*func)(void *), void *arg) {
+    printf("[uthread_run] called\n");
+    (void)preempt; // ignore preemption for now
+
+    main_thread = malloc(sizeof(uthread_t));
+    main_thread->is_main_thread = 1;
+    main_thread->stack = NULL;
+    main_thread->state = RUNNING;
+    main_thread->next = NULL;
+    getcontext(&main_thread->context);
+
+    current = main_thread;
+
+    uthread_create(func, arg);
+
+    while (ready_queue != NULL) {
+        uthread_yield();
+    }
+
+    free(main_thread);
+    printf("[uthread_run] done\n");
 }
 
 int uthread_create(void (*func)(void *), void *arg) {
-    uthread_init();
-    uthread_tcb_t *tcb = malloc(sizeof(uthread_tcb_t));
-    if (!tcb) return -1;
-
-    tcb->func = func;
-    tcb->arg = arg;
-    tcb->finished = 0;
-    tcb->stack = malloc(UTHREAD_STACK_SIZE);
-    if (!tcb->stack) {
-        free(tcb);
-        return -1;
-    }
-
-    getcontext(&tcb->context);
-    tcb->context.uc_stack.ss_sp = tcb->stack;
-    tcb->context.uc_stack.ss_size = UTHREAD_STACK_SIZE;
-    tcb->context.uc_link = &main_context;
-    makecontext(&tcb->context, (void (*)())thread_stub, 1, arg);
-
-    queue_enqueue(ready_queue, tcb);
+    printf("[uthread_create] called\n");
+    uthread_t *t = malloc(sizeof(uthread_t));
+    t->is_main_thread = 0;
+    t->stack = malloc(UTHREAD_STACK_SIZE);
+    t->state = READY;
+    t->next = NULL;
+    uthread_ctx_init(&t->context, t->stack, func, arg);
+    enqueue(t);
+    printf("[uthread_create] done\n");
     return 0;
 }
 
 void uthread_yield(void) {
-    uthread_tcb_t *prev = current_thread;
-    uthread_tcb_t *next = NULL;
-
-    if (prev && !prev->finished)
-        queue_enqueue(ready_queue, prev);
-
-    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
-        current_thread = next;
+    printf("[uthread_yield] called\n");
+    uthread_t *prev = current;
+    uthread_t *next = dequeue();
+    if (next) {
+        if (prev->state == RUNNING)
+            prev->state = READY;
+        // Only enqueue if the thread is READY (not BLOCKED)
+        if (prev->state == READY)
+            enqueue(prev);
+        next->state = RUNNING;
+        current = next;
+        printf("[uthread_yield] switching context\n");
         swapcontext(&prev->context, &next->context);
+    } else {
+        printf("[uthread_yield] no thread to yield to\n");
     }
+    printf("[uthread_yield] done\n");
 }
 
 void uthread_exit(void) {
-    uthread_tcb_t *prev = current_thread;
-    free(prev->stack);
+    printf("[uthread_exit] called\n");
+    uthread_t *prev = current;
+    current = dequeue();
+    if (!prev->is_main_thread && prev->stack) {
+        free(prev->stack);
+    }
     free(prev);
-    current_thread = NULL;
-    uthread_tcb_t *next = NULL;
-    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
-        current_thread = next;
-        setcontext(&next->context);
+    if (current) {
+        current->state = RUNNING;
+        printf("[uthread_exit] switching context\n");
+        setcontext(&current->context);
     } else {
-        setcontext(&main_context);
+        printf("[uthread_exit] no more threads, exiting\n");
+        exit(0);
     }
-}
-
-void uthread_run(void) {
-    uthread_init();
-    uthread_tcb_t *next = NULL;
-    if (queue_dequeue(ready_queue, (void **)&next) == 0) {
-        current_thread = next;
-        swapcontext(&main_context, &next->context);
-    }
+    printf("[uthread_exit] done\n");
 }

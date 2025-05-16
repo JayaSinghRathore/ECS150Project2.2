@@ -3,6 +3,7 @@
 
 #include "uthread.h"
 
-// No struct or macro definitions here.
+extern uthread_t *current;
+void enqueue(uthread_t *t);
 
-#endif // PRIVATE_H
+#endif

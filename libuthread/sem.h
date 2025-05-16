@@ -1,16 +1,16 @@
 #ifndef SEM_H
 #define SEM_H
 
-#include "queue.h"
+#include "uthread.h"
 
 typedef struct sem {
-    int value;
-    queue_t wait_queue;
+    int count;
+    // Add other fields as needed (e.g., waiting queue)
 } sem_t;
 
-sem_t *sem_create(int value);
+sem_t sem_create(int value);
 void sem_destroy(sem_t *sem);
-int sem_wait(sem_t *sem);
-int sem_signal(sem_t *sem);
+void sem_down(sem_t *sem);
+void sem_up(sem_t *sem);
 
-#endif // SEM_H
+#endif

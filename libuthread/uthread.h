@@ -1,23 +1,11 @@
 #ifndef UTHREAD_H
 #define UTHREAD_H
 
-#include <ucontext.h>
+typedef struct uthread uthread_t;
 
-#define UTHREAD_MAX_THREADS 128
-#define UTHREAD_STACK_SIZE  32768
-
-typedef struct uthread_tcb {
-    ucontext_t context;
-    void (*func)(void *);
-    void *arg;
-    void *stack;
-    int finished;
-} uthread_tcb_t;
-
-void uthread_init(void);
-int uthread_create(void (*func)(void *), void *arg);
+void uthread_create(void (*func)(void *), void *arg);
 void uthread_yield(void);
-void uthread_exit(void);
-void uthread_run(void);
+void uthread_run(int, void (*func)(void *), void *arg);
 
-#endif // UTHREAD_H
+#endif
+
