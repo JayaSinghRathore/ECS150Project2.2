@@ -1,17 +1,17 @@
-#include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
-
-#include <uthread.h>
+#include "uthread.h"
 
 void hello(void *arg) {
     (void)arg;
-
     printf("Hello world!\n");
 }
 
-int main(void) {
-    uthread_run(false, hello, NULL);
+void start(void *arg) {
+    (void)arg;
+    uthread_create(hello, NULL);
+}
 
+int main(void) {
+    uthread_run(0, start, NULL);
     return 0;
 }

@@ -1,58 +1,38 @@
-/*
- * Semaphore simple test
- *
- * Test the synchronization of three threads, by having them print messages in
- * a certain order.
- */
-
-#include <limits.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include "uthread.h"
+#include "sem.h"
 
-#include <sem.h>
-#include <uthread.h>
+#define NUM_THREADS 4
 
-sem_t sem1;
-sem_t sem2;
-sem_t sem3;
+typedef struct {
+    int id;
+    sem_t *sem;
+} thread_arg_t;
 
-static void thread3(void *arg) {
-    (void)arg;
-
-    sem_down(sem3); /* Wait for thread1 */
-    printf("thread3\n");
-    sem_up(sem2);   /* Unblock thread2 */
-}
-
-static void thread2(void *arg) {
-    (void)arg;
-
-    sem_down(sem2); /* Wait for thread 3 */
-    printf("thread2\n");
-    sem_up(sem1);   /* Unblock thread1 */
-}
-
-static void thread1(void *arg) {
-    (void)arg;
-
-    uthread_create(thread2, NULL);
-    uthread_create(thread3, NULL);
-
-    sem_up(sem3);   /* Unblock thread 3 */
-    sem_down(sem1); /* Wait for thread 2 */
-    printf("thread1\n");
+void thread_func(void *arg) {
+    thread_arg_t *targ = (thread_arg_t *)arg;
+    sem_down(targ->sem);
+    printf("Thread %d in critical section\n", targ->id);
+    sem_up(targ->sem);
 }
 
 int main(void) {
-    sem1 = sem_create(0);
-    sem2 = sem_create(0);
-    sem3 = sem_create(0);
+    sem_t sem = sem_create(0);
 
-    uthread_run(false, thread1, NULL);
+    thread_arg_t args[NUM_THREADS];
 
-    sem_destroy(sem1);
-    sem_destroy(sem2);
-    sem_destroy(sem3);
+    for (int i = 0; i < NUM_THREADS; i++) {
+        args[i].id = i;
+        args[i].sem = &sem;
+        uthread_create(thread_func, &args[i]);
+    }
 
+    // Kickstart the semaphore so one thread can proceed
+    sem_up(&sem);
+
+    // Start the scheduler
+    uthread_run(0, NULL, NULL);
+
+    sem_destroy(&sem);
     return 0;
 }

@@ -13,4 +13,4 @@ all: ../libuthread/libuthread.a $(PROGS)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 
 clean:
-	rm -f $(PROGS) *.o
+	rm -f $(PROGS) *.o *.x
